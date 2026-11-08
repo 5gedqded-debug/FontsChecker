@@ -10,10 +10,13 @@ import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.chip.Chip
@@ -21,7 +24,10 @@ import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.File
 
-/** Экран просмотра: карусель языков, которые есть в шрифте, и примеры текста. */
+/**
+ * Экран просмотра: карусель языков, которые есть в шрифте, и примеры текста.
+ * Если открыт архив (ZIP / 7z), сначала показывается список найденных в нём шрифтов.
+ */
 class PreviewActivity : AppCompatActivity() {
 
     private class Page(
@@ -38,6 +44,7 @@ class PreviewActivity : AppCompatActivity() {
     private lateinit var errorView: TextView
     private lateinit var chipScroll: View
     private lateinit var scroll: View
+    private lateinit var fontList: ListView
 
     private var typeface: Typeface? = null
     private var fontData: FontData? = null
@@ -46,6 +53,18 @@ class PreviewActivity : AppCompatActivity() {
     private var languages: List<Lang> = emptyList()
     private var pages: List<Page> = emptyList()
     private var customText = "Hamburgefonstiv 0123456789"
+
+    // Архив
+    private var archiveName: String = ""
+    private var archiveFile: File? = null
+    private var archiveKind = Archives.Kind.NONE
+    private var entries: List<Archives.Entry> = emptyList()
+
+    private val backToList = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            showList()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,9 +77,12 @@ class PreviewActivity : AppCompatActivity() {
         errorView = findViewById(R.id.errorView)
         chipScroll = findViewById(R.id.chipScroll)
         scroll = findViewById(R.id.scroll)
+        fontList = findViewById(R.id.fontList)
+
+        onBackPressedDispatcher.addCallback(this, backToList)
 
         toolbar.setTitle(R.string.preview_title)
-        toolbar.setNavigationOnClickListener { finish() }
+        toolbar.setNavigationOnClickListener { onBackPressedDispatcher.onBackPressed() }
         toolbar.inflateMenu(R.menu.preview_menu)
         toolbar.menu.findItem(R.id.action_info).isVisible = false
         toolbar.setOnMenuItemClickListener {
@@ -75,31 +97,98 @@ class PreviewActivity : AppCompatActivity() {
             showError(getString(R.string.error_no_file))
             return
         }
-        loadFont(uri)
+        loadSource(uri)
     }
 
-    private fun loadFont(uri: Uri) {
+    // ---------- загрузка ----------
+
+    private fun loadSource(uri: Uri) {
         queryFileInfo(uri)
+        archiveName = fileName
         toolbar.subtitle = fileName
-        progress.visibility = View.VISIBLE
-        cacheDir.listFiles()?.filter { it.name.startsWith("font_") }?.forEach { it.delete() }
+        showProgress()
+        cacheDir.listFiles()
+            ?.filter { it.name.startsWith("font_") || it.name.startsWith("src_") }
+            ?.forEach { it.delete() }
 
         Thread {
             try {
-                val raw = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                val src = File(cacheDir, "src_${System.nanoTime()}")
+                val input = contentResolver.openInputStream(uri)
                     ?: throw UnsupportedFontException(getString(R.string.error_read))
-                val data = FontParser.load(raw)
-                val file = File(cacheDir, "font_${System.nanoTime()}.ttf")
-                file.writeBytes(data.sfnt)
-                val tf = Typeface.Builder(file).build()
-                    ?: throw UnsupportedFontException(getString(R.string.error_typeface))
-                runOnUiThread { onLoaded(data, tf) }
+                input.use { i -> src.outputStream().use { o -> i.copyTo(o) } }
+
+                val kind = Archives.detect(src)
+                if (kind == Archives.Kind.NONE) {
+                    if (src.length() > MAX_FILE_SIZE) throw UnsupportedFontException(getString(R.string.error_too_big))
+                    val raw = src.readBytes()
+                    src.delete()
+                    val (data, tf) = prepare(raw)
+                    runOnUiThread { onLoaded(data, tf, fileName, fileSize) }
+                } else {
+                    archiveFile = src
+                    archiveKind = kind
+                    val list = try {
+                        Archives.listFonts(src, kind)
+                    } catch (e: UnsupportedFontException) {
+                        throw e
+                    } catch (e: Exception) {
+                        throw UnsupportedFontException(getString(R.string.error_archive))
+                    }
+                    if (list.isEmpty()) throw UnsupportedFontException(getString(R.string.error_no_fonts))
+                    entries = list
+                    if (list.size == 1) {
+                        val entry = list[0]
+                        val raw = readEntry(entry)
+                        val (data, tf) = prepare(raw)
+                        runOnUiThread { onLoaded(data, tf, entry.name, entry.size) }
+                    } else {
+                        runOnUiThread { showList() }
+                    }
+                }
             } catch (e: Throwable) {
-                val msg = if (e is UnsupportedFontException) e.message
-                else getString(R.string.error_generic, e.javaClass.simpleName)
-                runOnUiThread { showError(msg ?: getString(R.string.error_read)) }
+                reportError(e)
             }
         }.start()
+    }
+
+    private fun openEntry(entry: Archives.Entry) {
+        showProgress()
+        Thread {
+            try {
+                val raw = readEntry(entry)
+                val (data, tf) = prepare(raw)
+                runOnUiThread { onLoaded(data, tf, entry.name, entry.size) }
+            } catch (e: Throwable) {
+                reportError(e)
+            }
+        }.start()
+    }
+
+    private fun readEntry(entry: Archives.Entry): ByteArray {
+        val file = archiveFile ?: throw UnsupportedFontException(getString(R.string.error_read))
+        try {
+            return Archives.read(file, archiveKind, entry.path)
+        } catch (e: UnsupportedFontException) {
+            throw e
+        } catch (e: Exception) {
+            throw UnsupportedFontException(getString(R.string.error_archive))
+        }
+    }
+
+    private fun prepare(raw: ByteArray): Pair<FontData, Typeface> {
+        val data = FontParser.load(raw)
+        val file = File(cacheDir, "font_${System.nanoTime()}.ttf")
+        file.writeBytes(data.sfnt)
+        val tf = Typeface.Builder(file).build()
+            ?: throw UnsupportedFontException(getString(R.string.error_typeface))
+        return data to tf
+    }
+
+    private fun reportError(e: Throwable) {
+        val msg = if (e is UnsupportedFontException) e.message
+        else getString(R.string.error_generic, e.javaClass.simpleName)
+        runOnUiThread { showError(msg ?: getString(R.string.error_read)) }
     }
 
     private fun queryFileInfo(uri: Uri) {
@@ -118,11 +207,46 @@ class PreviewActivity : AppCompatActivity() {
         }
     }
 
-    private fun onLoaded(data: FontData, tf: Typeface) {
+    // ---------- состояния экрана ----------
+
+    private fun showProgress() {
+        progress.visibility = View.VISIBLE
+        chipScroll.visibility = View.GONE
+        scroll.visibility = View.GONE
+        fontList.visibility = View.GONE
+        errorView.visibility = View.GONE
+        toolbar.menu.findItem(R.id.action_info).isVisible = false
+    }
+
+    /** Список шрифтов внутри архива. */
+    private fun showList() {
+        progress.visibility = View.GONE
+        chipScroll.visibility = View.GONE
+        scroll.visibility = View.GONE
+        errorView.visibility = View.GONE
+        toolbar.menu.findItem(R.id.action_info).isVisible = false
+        backToList.isEnabled = false
+        toolbar.subtitle = getString(R.string.list_title, archiveName, entries.size)
+
+        val labels = entries.map {
+            if (it.size > 0) "${it.path}  (${formatSize(it.size)})" else it.path
+        }
+        fontList.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
+        fontList.setOnItemClickListener { _, _, position, _ -> openEntry(entries[position]) }
+        fontList.visibility = View.VISIBLE
+    }
+
+    private fun onLoaded(data: FontData, tf: Typeface, name: String, size: Long) {
         fontData = data
         typeface = tf
+        fileName = name
+        fileSize = size
         progress.visibility = View.GONE
+        fontList.visibility = View.GONE
+        errorView.visibility = View.GONE
         toolbar.menu.findItem(R.id.action_info).isVisible = true
+        toolbar.subtitle = if (archiveFile != null) "$archiveName › $name" else name
+        backToList.isEnabled = entries.size > 1
 
         languages = Languages.supportedBy(data.codepoints)
         val list = ArrayList<Page>()
@@ -141,6 +265,19 @@ class PreviewActivity : AppCompatActivity() {
         scroll.visibility = View.VISIBLE
         buildChips()
     }
+
+    private fun showError(message: String) {
+        progress.visibility = View.GONE
+        chipScroll.visibility = View.GONE
+        scroll.visibility = View.GONE
+        fontList.visibility = View.GONE
+        errorView.text = message
+        errorView.visibility = View.VISIBLE
+        // Из ошибки открытия одного шрифта в архиве можно вернуться к списку.
+        backToList.isEnabled = entries.size > 1
+    }
+
+    // ---------- карусель и примеры ----------
 
     private fun buildChips() {
         chipGroup.removeAllViews()
@@ -231,14 +368,6 @@ class PreviewActivity : AppCompatActivity() {
         }
     }
 
-    private fun showError(message: String) {
-        progress.visibility = View.GONE
-        chipScroll.visibility = View.GONE
-        scroll.visibility = View.GONE
-        errorView.text = message
-        errorView.visibility = View.VISIBLE
-    }
-
     private fun showInfo() {
         val d = fontData ?: return
         val langs = if (languages.isEmpty()) getString(R.string.info_no_langs)
@@ -270,6 +399,7 @@ class PreviewActivity : AppCompatActivity() {
         private const val DIGITS = "0123456789"
         private const val PUNCT = ",.:;!?'\"()[]{}«»…"
         private const val MATH = "+-*/=<>@#\$%&_~^\\|"
+        private const val MAX_FILE_SIZE = 200L * 1024 * 1024
         private val SIZES = listOf(12, 18, 24, 36, 48, 60)
     }
 }

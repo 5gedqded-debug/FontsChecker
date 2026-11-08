@@ -49,6 +49,12 @@
                 android:padding="16dp" />
         </ScrollView>
 
+        <ListView
+            android:id="@+id/fontList"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+
         <ProgressBar
             android:id="@+id/progress"
             android:layout_width="wrap_content"

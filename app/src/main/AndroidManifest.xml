@@ -33,6 +33,8 @@
                 <data android:mimeType="application/font-sfnt" />
                 <data android:mimeType="application/vnd.ms-opentype" />
                 <data android:mimeType="application/font-woff" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-7z-compressed" />
             </intent-filter>
         </activity>
     </application>

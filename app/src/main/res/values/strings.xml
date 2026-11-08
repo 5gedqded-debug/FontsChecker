@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">FontsChecker</string>
-    <string name="main_hint">Выберите файл шрифта (TTF, OTF, TTC, WOFF), и вы сразу увидите, для каких языков он создан.</string>
+    <string name="main_hint">Выберите шрифт (TTF, OTF, TTC, WOFF) или архив с шрифтами (ZIP, 7z), и вы сразу увидите, для каких языков он создан.</string>
     <string name="pick_font">Выбрать шрифт</string>
 
     <string name="preview_title">Просмотр шрифтов</string>
@@ -12,6 +12,10 @@
     <string name="error_no_file">Файл шрифта не указан</string>
     <string name="error_read">Не удалось прочитать файл</string>
     <string name="error_typeface">Android не смог загрузить этот шрифт. Возможно, файл повреждён.</string>
+    <string name="error_too_big">Файл слишком большой</string>
+    <string name="error_archive">Не удалось прочитать архив (возможно, он повреждён или защищён паролем)</string>
+    <string name="error_no_fonts">В архиве не найдено шрифтов (TTF, OTF, TTC, WOFF)</string>
+    <string name="list_title">%1$s · шрифтов: %2$d</string>
     <string name="error_generic">Ошибка при открытии шрифта (%1$s)</string>
 
     <string name="info_title">О шрифте</string>
